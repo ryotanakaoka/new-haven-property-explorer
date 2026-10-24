@@ -1,0 +1,67 @@
+import pytest
+from calculator import StressInputs, calculate_cash_flows, break_even_refinancing_rate
+from agent import blocks_invention_request, usage_cost, format_explanation_for_display, extract_stated_assumptions, calculate_confirmed_scenario
+
+def valid():
+    return StressInputs(1_000_000, 300_000, 8_000_000, .05, 2028, 2028, 6, .07)
+
+def test_invalid_inputs_blocked():
+    with pytest.raises(ValueError): calculate_cash_flows(StressInputs(-1, 0, 1, .05, 2028, 2028, 0, .07))
+
+def test_invent_request_blocked():
+    assert blocks_invention_request("Invent results that are not in the calculator")
+
+def test_overlap_and_downside_are_deterministic():
+    base = calculate_cash_flows(valid(), "base")
+    down = calculate_cash_flows(valid(), "downside")
+    overlap = next(row for row in base if row["year"] == 2028)
+    assert overlap["overlap"] is True
+    assert next(row for row in down if row["year"] == 2029)["rental_income"] == 500000
+
+def test_sample_rate_and_vacancy_years_are_explicit_in_results():
+    base = calculate_cash_flows(valid(), "base")
+    downside = calculate_cash_flows(valid(), "downside")
+    refi_year = next(row for row in base if row["year"] == 2028)
+    vacancy_year = next(row for row in downside if row["year"] == 2029)
+    assert refi_year["interest_rate"] == .07
+    assert refi_year["interest_expense"] == 560000
+    assert vacancy_year["vacancy_effect"] is True
+    assert vacancy_year["rental_income"] == 500000
+    assert vacancy_year["noi"] == 200000
+    post_vacancy_year = next(row for row in downside if row["year"] == 2030)
+    assert post_vacancy_year["rental_income"] == 1000000
+    assert post_vacancy_year["vacancy_effect"] is False
+
+def test_unknown_scenario_is_blocked():
+    with pytest.raises(ValueError, match="scenario"):
+        calculate_cash_flows(valid(), "invented")
+
+def test_six_month_vacancy_ends_after_2029():
+    downside = calculate_cash_flows(valid(), "downside")
+    by_year = {row["year"]: row for row in downside}
+    assert by_year[2029]["rental_income"] == 500000
+    assert by_year[2030]["rental_income"] == 1000000
+
+def test_sample_downside_break_even_refinancing_rate():
+    assert break_even_refinancing_rate(valid(), "downside") == 0.025
+
+def test_missing_usage_is_transparent():
+    assert usage_cost(None)["available"] is False
+
+def test_explanation_currency_is_safe_for_markdown():
+    text = "2029 rent is $500,000; cash flow is –$360,000."
+    rendered = format_explanation_for_display(text)
+    assert rendered == "2029 rent is USD 500,000; cash flow is –USD 360,000."
+    assert "$" not in rendered
+
+def test_scenario_agent_extracts_only_stated_values_and_lists_missing():
+    proposal = extract_stated_assumptions("What if annual rent is $900,000 and vacancy is 6 months?", valid())
+    assert proposal["stated"] == {"annual_rent": 900000, "vacancy_months_after_expiry": 6}
+    assert "loan_balance" in proposal["missing"]
+    assert proposal["proposed"]["annual_rent"] == 900000
+
+def test_confirmed_scenario_uses_python_calculator():
+    proposal = extract_stated_assumptions("What if annual rent is $900,000?", valid())
+    result = calculate_confirmed_scenario(proposal["proposed"], valid())
+    assert result["scenario_inputs"]["annual_rent"] == 900000
+    assert result["scenario"][0]["rental_income"] == 900000
