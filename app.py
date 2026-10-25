@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from data import fetch_new_haven_comps, comp_coverage, audit_sales_records, SALES_VINTAGE, CAMA_VINTAGE
-from explorer import filter_sales, search_request_result, combine_search_filters, build_ai_records_payload, analyze_filtered_records
+from explorer import filter_sales, search_request_result, combine_search_filters, build_ai_records_payload, build_sales_analysis_payload
 from agent import explain_with_agent, format_explanation_for_display
 
 load_dotenv(Path.cwd() / ".env")
@@ -89,16 +89,16 @@ if st.button("Ask AI about matching records"):
         if len(filtered) == len(comps):
             st.error("Apply an effective property type, date, price, or natural-language filter before asking AI; sending all records is disabled.")
             st.stop()
-        ai_records = build_ai_records_payload(filtered)
         if not analysis_question.strip():
             st.error("Enter a factual question about the matching records before asking AI.")
             st.stop()
-        analysis = analyze_filtered_records(filtered, analysis_question)
-        if not analysis["supported"]:
-            st.error(analysis["message"])
+        analysis_payload = build_sales_analysis_payload(filtered, analysis_question)
+        if not analysis_payload["python_analysis"]["supported"]:
+            st.error(analysis_payload["python_analysis"]["message"])
             st.stop()
-        st.caption(f"Records sent to AI: {ai_records['matching_count']}")
-        memo, usage = asyncio.run(explain_with_agent(prompt + "\nUser question: " + analysis_question, {"filters": parsed, "python_analysis": analysis, **ai_records}))
+        compact_count = len(analysis_payload["python_analysis"].get("records", []))
+        st.caption(f"Records sent to AI: {compact_count} compact analysis records (from {len(filtered)} matching records)")
+        memo, usage = asyncio.run(explain_with_agent(prompt + " Cite the supplied record IDs and source links.\nUser question: " + analysis_question, {"filters": parsed, **analysis_payload}))
         if usage.get("available"): st.write(format_explanation_for_display(memo))
         else: st.error(memo)
         st.json(usage)

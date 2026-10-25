@@ -95,7 +95,7 @@ def _redact_error(exc: Exception, secret: str | None = None) -> str:
 
 async def explain_with_agent(prompt: str, calculator_result: dict) -> tuple[str, dict]:
     if blocks_invention_request(prompt):
-        return "I can't invent or alter figures. Please ask about the calculator results.", {"available": False, "message": "Request blocked by validation."}
+        return "I can't invent or alter public-sales facts. Please ask a supported question about the supplied public-sales analysis.", {"available": False, "message": "Request blocked by validation."}
     try:
         from openai import AsyncOpenAI
         from pydantic_ai import Agent

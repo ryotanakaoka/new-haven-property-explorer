@@ -3,7 +3,7 @@ from calculator import StressInputs, calculate_cash_flows, break_even_refinancin
 from agent import blocks_invention_request, usage_cost, format_explanation_for_display, extract_stated_assumptions, calculate_confirmed_scenario, parse_screen_decision
 from screener import screen_deal, compare_to_comps, final_screen_verdict
 from data import comp_coverage, fetch_sales_pages, fetch_new_haven_comps, SALES_URL, CAMA_URL
-from explorer import filter_sales, parse_natural_language_filters, search_request_result, build_ai_records_payload, combine_search_filters, analyze_filtered_records
+from explorer import filter_sales, parse_natural_language_filters, search_request_result, build_ai_records_payload, combine_search_filters, analyze_filtered_records, build_sales_analysis_payload
 from agent import PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
 from offering_packet import extract_offering_pdf, extract_offering_text_pages
 from pypdf import PdfWriter
@@ -207,6 +207,18 @@ def test_filtered_record_analyses_are_python_calculated():
     comparison = analyze_filtered_records(rows, "compare by property type")
     assert comparison["by_property_type"]["Apartments"]["median_sale_price"] == 550000
 
+def test_end_to_end_five_most_recent_sales_payload_is_compact():
+    rows = [{"record_id": f"r{i}", "property_type": "Apartments", "sale_date": f"202{i}-01-01",
+             "sale_price": 500000 + i, "sales_source": f"https://example.test/{i}"} for i in range(8)]
+    payload = build_sales_analysis_payload(rows, "What are the five most recent sales?")
+    assert payload["matching_count"] == 8
+    result = payload["python_analysis"]
+    assert result["supported"] is True
+    assert result["analysis"] == "recent_sales"
+    assert len(result["records"]) == 5
+    assert [r["record_id"] for r in result["records"]] == ["r7", "r6", "r5", "r4", "r3"]
+    assert all("sales_source" in r for r in result["records"])
+
 def test_unsupported_analysis_question_is_explicit():
     result = analyze_filtered_records([], "what is the neighborhood outlook?")
     assert result["supported"] is False
@@ -230,7 +242,7 @@ def test_app_imports_analyze_filtered_records(monkeypatch):
     })
     sys.modules.pop("app", None)
     module = importlib.import_module("app")
-    assert callable(module.analyze_filtered_records)
+    assert callable(module.build_sales_analysis_payload)
 
 def test_sales_fetch_paginates_until_short_page():
     pages = [[{"serialnumber": str(i)} for i in range(100)], [{"serialnumber": "record-101"}]]

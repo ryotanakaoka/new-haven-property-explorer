@@ -115,3 +115,10 @@ def analyze_filtered_records(rows: list[dict], question: str) -> dict:
             grouped[row.get("property_type") or "Unknown"].append(row["sale_price"])
         return {"supported": True, "analysis": "property_type_comparison", "by_property_type": {typ: {"count": len(vals), "median_sale_price": median(vals)} for typ, vals in sorted(grouped.items())}}
     return {"supported": False, "message": "The filtered public sales cannot answer that question. Ask about recent sales, highest or lowest prices, trends over time, or comparisons by property type."}
+
+def build_sales_analysis_payload(filtered: list[dict], question: str) -> dict:
+    """Return only the compact Python result needed to explain a sales question."""
+    analysis = analyze_filtered_records(filtered, question)
+    if not analysis["supported"]:
+        return analysis
+    return {"matching_count": len(filtered), "python_analysis": analysis}
