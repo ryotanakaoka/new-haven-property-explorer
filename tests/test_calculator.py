@@ -212,6 +212,26 @@ def test_unsupported_analysis_question_is_explicit():
     assert result["supported"] is False
     assert "cannot answer" in result["message"]
 
+def test_app_imports_analyze_filtered_records(monkeypatch):
+    """Regression test for the app/explorer import contract."""
+    import importlib
+    import sys
+    import data
+    rows = [{"property_type": "Apartments", "sale_date": "2024-01-01", "sale_price": 585000,
+             "record_id": "test-1", "address": "1 TEST ST", "assessment": 400000,
+             "sales_source": "https://example.test/sale", "assessment_source": "https://example.test/cama",
+             "latitude": 41.3, "longitude": -72.9}]
+    monkeypatch.setattr(data, "fetch_new_haven_comps", lambda: rows)
+    monkeypatch.setattr(data, "comp_coverage", lambda _: {"property_types": ["Apartments"]})
+    monkeypatch.setattr(data, "audit_sales_records", lambda *_args, **_kwargs: {
+        "sales_source_url": "https://example.test/sales", "cama_source_url": "https://example.test/cama",
+        "source_row_count": 1, "cama_row_count": 1, "displayed_row_count": 1,
+        "date_range": ("2024-01-01", "2024-01-01"), "record_ids": ["test-1"], "all_direct_checks_pass": True,
+    })
+    sys.modules.pop("app", None)
+    module = importlib.import_module("app")
+    assert callable(module.analyze_filtered_records)
+
 def test_sales_fetch_paginates_until_short_page():
     pages = [[{"serialnumber": str(i)} for i in range(100)], [{"serialnumber": "record-101"}]]
     calls = []
