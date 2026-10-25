@@ -99,6 +99,12 @@ def test_verdict_uses_python_cap_rate_and_hurdle():
     assert final_screen_verdict(deal, .08, {"enough": True, "property_types": ["Two Family"]})["verdict"] == "ADVANCE TO DUE DILIGENCE"
     assert final_screen_verdict(deal, .09, {"enough": True, "property_types": ["Two Family"]})["verdict"] == "PASS"
 
+def test_screening_status_is_non_recommendation_label():
+    deal = screen_deal(1_000_000, 120_000, 40_000, "100 Example St", 4)
+    status = final_screen_verdict(deal, .08, {"enough": True, "property_types": ["Two Family"]})["verdict"]
+    assert status == "ADVANCE TO DUE DILIGENCE"
+    assert status not in {"INVEST", "BUY", "SELL"}
+
 def test_offering_extraction_requires_confirmation_and_cites_pages():
     writer = PdfWriter()
     writer.add_blank_page(width=300, height=300)

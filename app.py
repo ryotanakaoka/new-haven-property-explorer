@@ -4,9 +4,9 @@ from dotenv import load_dotenv
 import streamlit as st
 from data import fetch_new_haven_comps, comp_coverage, audit_sales_records, SALES_VINTAGE, CAMA_VINTAGE
 from screener import screen_deal, compare_to_comps, final_screen_verdict
-from agent import explain_with_agent, format_explanation_for_display, parse_screen_decision
+from agent import explain_with_agent, format_explanation_for_display
 from offering_packet import extract_offering_pdf
-from explorer import filter_sales, parse_natural_language_filters
+from explorer import filter_sales
 from datetime import date, datetime
 import pandas as pd
 
@@ -15,6 +15,8 @@ load_dotenv(Path.cwd().parent / ".env")
 st.set_page_config(page_title="New Haven Multifamily Screener", layout="wide")
 st.title("New Haven Multifamily Investment Screener")
 st.caption("Preliminary screening only • official Connecticut records • not an appraisal or investment decision")
+with st.expander("How to use", expanded=True):
+    st.markdown("1. Review or enter the deal inputs in the sidebar.\n2. Use the public-record filters to narrow sales.\n3. Review Python NOI, cap rate, and screening status.\n4. Ask one factual AI question about the entered deal and displayed records. The AI does not make an investment recommendation.")
 with st.sidebar:
     st.header("Deal inputs")
     address = st.text_input("Property address", value="", placeholder="Enter the subject property address")
@@ -67,7 +69,8 @@ audit = audit_sales_records(comps, sample_size=5)
 st.subheader("Official-source audit")
 st.write(f"Sales source: {audit['sales_source_url']} | CAMA source: {audit['cama_source_url']}")
 st.write(f"Sales source rows: {audit['source_row_count']} | CAMA source rows: {audit['cama_row_count']} | Displayed sales rows: {audit['displayed_row_count']} | Date range: {audit['date_range'][0]} to {audit['date_range'][1]} | 2024 GL-valid through 2025-09-30: {audit['valid_2024_gl_count']}")
-st.write("Displayed sales record IDs: " + ", ".join(str(x) for x in audit["record_ids"]))
+with st.expander("Displayed sales record IDs"):
+    st.write(", ".join(str(x) for x in audit["record_ids"]))
 if audit["all_direct_checks_pass"]:
     st.success("Five displayed sales were re-fetched directly from the official sales source and matched on record ID, property type, and sale price.")
 else:
@@ -82,7 +85,6 @@ with st.sidebar:
     date_range = st.date_input("Sale date", value=(min(dates), max(dates)))
     min_price = st.number_input("Minimum sale price (USD)", min_value=0, value=0, step=25_000)
     max_price = st.number_input("Maximum sale price (USD)", min_value=0, value=0, step=25_000, help="0 means no maximum")
-    nl_query = st.text_input("Describe filters to AI", placeholder="apartments under $1,000,000")
 start_date = date_range[0] if isinstance(date_range, tuple) else date_range
 end_date = date_range[-1] if isinstance(date_range, tuple) else date_range
 filtered = filter_sales(comps, selected_types, start_date, end_date, min_price or None, max_price or None)
@@ -103,15 +105,6 @@ if map_rows:
     st.pydeck_chart(pdk.Deck(initial_view_state=pdk.ViewState(latitude=41.31, longitude=-72.92, zoom=11), layers=[pdk.Layer("ScatterplotLayer", data=map_data, get_position="[longitude, latitude]", get_radius=45, get_fill_color=[30, 100, 200, 180], pickable=True)], tooltip={"text": "{tooltip}"}))
 else:
     st.info("No matching records have reliable official coordinates for mapping.")
-if st.button("Ask AI to apply these filters"):
-    ai_filters = parse_natural_language_filters(nl_query, types)
-    ai_filtered = filter_sales(comps, **ai_filters)
-    prompt = "Apply the user's public-record filter request to the read-only records returned by the tool. Report matching records and counts only from those records. Use no unstated prices and give no buy/sell recommendations."
-    memo, usage = asyncio.run(explain_with_agent(prompt, {"user_filter": nl_query, "applied_filters": ai_filters, "records": ai_filtered}))
-    if usage.get("available"):
-        st.write(format_explanation_for_display(memo))
-    else:
-        st.error(memo)
 try:
     deal = screen_deal(calc_asking, calc_rent, calc_expenses, address, calc_units)
     comparison = compare_to_comps(deal, comps)
@@ -130,41 +123,23 @@ st.warning("This is a preliminary screening verdict for deciding whether to inve
 st.metric("Verdict", verdict["verdict"])
 st.write(verdict["reason"])
 st.caption(f"Python cap rate: {deal['cap_rate']:.2%} | Entered hurdle: {hurdle:.2%} | Verified comp types: {', '.join(coverage['property_types'])}")
-st.subheader("Preliminary AI screening memo")
-st.caption("The AI compares only the cited records and Python result, and flags missing or conflicting inputs. It must not invent facts.")
-if st.button("Write preliminary memo"):
-    prompt = "Write a preliminary New Haven multifamily screening memo. Compare the deal with the cited Connecticut records only. Flag missing or conflicting inputs. Do not provide a definitive appraisal or investment decision."
-    payload = {"deal": deal, "comparison": comparison, "coverage": coverage, "cited_comps": comps[:50], "data_vintages": [SALES_VINTAGE, CAMA_VINTAGE], "offering_extraction": offering, "broker_notes": broker_notes}
-    memo, usage = asyncio.run(explain_with_agent(prompt, payload))
-    if not usage.get("available"):
-        st.error(memo)
-    else:
-        st.write(format_explanation_for_display(memo))
-    st.json(usage)
-
-st.subheader("AI investment screen")
-st.caption("This is a preliminary screen, not a definitive appraisal or investment decision. The AI may use only your entered deal numbers and the displayed public records.")
-if st.button("Ask AI for an investment screen"):
+st.subheader("Ask AI about this screening")
+st.caption("Ask one factual question about the entered deal and displayed public records. The AI will not generate an INVEST/PASS recommendation; the screening status above is Python-calculated.")
+ai_question = st.text_input("AI question", placeholder="Which displayed sales are closest in property type and sale price?")
+if st.button("Ask AI"):
     missing = []
     if not address.strip(): missing.append("property address")
     if int(units) <= 0: missing.append("unit count")
-    prompt = ("Return exactly one first-line decision label: INVEST, PASS, or NEED MORE INFORMATION. "
-              "Then give concise reasons using only the entered numbers and cited public sales. "
-              "Use no unstated facts. Flag missing information explicitly. This is preliminary screening only.")
+    prompt = ("Answer the user's factual question using only the entered deal and displayed public sales. "
+              "Use no unstated facts and do not make or label any investment recommendation.")
     if missing:
-        decision, memo = "NEED MORE INFORMATION", "Missing information: " + ", ".join(missing) + "."
+        memo = "Unable to answer because required deal fields are missing: " + ", ".join(missing) + "."
         usage = {"available": False, "message": "AI not called because required deal fields are missing."}
     else:
-        memo, usage = asyncio.run(explain_with_agent(prompt, {"deal": deal, "public_sales": comps, "coverage": coverage, "offering_extraction": offering, "broker_notes": broker_notes}))
-        decision = parse_screen_decision(memo) if usage.get("available") else None
+        memo, usage = asyncio.run(explain_with_agent(prompt + "\nUser question: " + ai_question, {"deal": deal, "public_sales": comps, "coverage": coverage, "offering_extraction": offering, "broker_notes": broker_notes}))
     with st.container(border=True):
         if not usage.get("available"):
             st.error(memo)
         else:
-            st.markdown(f"### {decision}")
             st.write(format_explanation_for_display(memo))
-        st.write("Missing information")
-        st.write(missing or "None identified by the input gate.")
-        st.write("Source records")
-        st.dataframe([{k: row.get(k) for k in ("address", "property_type", "sale_date", "sale_price", "assessment", "sales_source", "assessment_source")} for row in comps], use_container_width=True, hide_index=True)
         st.json(usage)
