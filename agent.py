@@ -7,6 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from dataclasses import asdict
 from calculator import StressInputs, calculate_cash_flows
+from explorer import is_prompt_injection_request
 
 load_dotenv(Path.cwd() / ".env")
 load_dotenv(Path.cwd().parent / ".env")
@@ -106,13 +107,17 @@ def _redact_error(exc: Exception, secret: str | None = None) -> str:
 
 
 async def explain_with_agent(prompt: str, calculator_result: dict) -> tuple[str, dict]:
-    if blocks_invention_request(user_question_from_prompt(prompt)):
+    user_question = user_question_from_prompt(prompt)
+    if blocks_invention_request(user_question):
         return "I can't invent or alter public-sales facts. Please ask a supported question about the supplied public-sales analysis.", {"available": False, "message": "Request blocked by validation."}
+    if is_prompt_injection_request(user_question):
+        return "This request includes instructions outside the supported public-record analysis and was blocked before AI.", {"available": False, "message": "Prompt-injection pattern blocked by validation."}
     try:
         from openai import AsyncOpenAI
         from pydantic_ai import Agent
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
+        from pydantic_ai.usage import UsageLimits
         portkey_key = os.getenv("PORTKEY_API_KEY")
         if not portkey_key:
             return "Agent unavailable: PORTKEY_API_KEY is missing from .env in this folder or its parent. The deterministic results above are still valid.", {"available": False, "message": "PORTKEY_API_KEY is not configured; usage unavailable."}
@@ -133,9 +138,19 @@ async def explain_with_agent(prompt: str, calculator_result: dict) -> tuple[str,
             tools=[public_records],
             # gpt-6-luna's Portkey deployment requires reasoning to be off
             # when function tools are sent through /v1/chat/completions.
-            model_settings={"openai_reasoning_effort": "none"},
+            model_settings={"openai_reasoning_effort": "none", "max_tokens": 500},
         )
-        result = await agent.run(prompt)
+        # Bound a single explanation run: at most two model requests (one tool
+        # handoff and one final answer), one tool call, and 500 output tokens.
+        result = await agent.run(
+            prompt,
+            usage_limits=UsageLimits(
+                request_limit=2,
+                tool_calls_limit=1,
+                input_tokens_limit=4000,
+                output_tokens_limit=500,
+            ),
+        )
         usage_value = getattr(result, "usage", None)
         usage = usage_value() if callable(usage_value) else usage_value
         return result.output, usage_cost(usage)

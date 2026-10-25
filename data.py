@@ -2,6 +2,8 @@
 from __future__ import annotations
 import re
 import requests
+import json
+from pathlib import Path
 from datetime import datetime
 
 SALES_DATASET = "5mzw-sjtu"
@@ -10,7 +12,17 @@ SALES_VINTAGE = "Connecticut Real Estate Sales, list years 2007–2024 (accessed
 CAMA_VINTAGE = "Connecticut Parcel and CAMA Data 2025 (accessed 2026-10-23)"
 SALES_URL = f"https://data.ct.gov/resource/{SALES_DATASET}.json"
 CAMA_URL = f"https://data.ct.gov/resource/{CAMA_DATASET}.json"
+SAMPLE_DATA_PATH = Path(__file__).resolve().parent / "data" / "sample_new_haven_comps.json"
 MULTIFAMILY_TYPES = ("Two Family", "Three Family", "Four Family", "Apartments")
+
+
+def load_sample_comps() -> tuple[list[dict], dict]:
+    """Load a small, dated snapshot of real public-source rows for offline testing."""
+    payload = json.loads(SAMPLE_DATA_PATH.read_text(encoding="utf-8"))
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        raise ValueError("The bundled public-record sample is empty or malformed.")
+    return records, {key: value for key, value in payload.items() if key != "records"}
 
 def _number(value):
     try: return float(value)

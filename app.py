@@ -4,13 +4,25 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-from data import fetch_new_haven_comps, comp_coverage, audit_sales_records, SALES_VINTAGE, CAMA_VINTAGE
-from explorer import filter_sales, search_request_result, combine_search_filters, filter_override_messages, build_sales_analysis_payload, analysis_records_status, readable_sale_date, format_cama_details
+from data import fetch_new_haven_comps, load_sample_comps, comp_coverage, audit_sales_records, SALES_VINTAGE, CAMA_VINTAGE
+from explorer import filter_sales, search_request_result, combine_search_filters, filter_override_messages, build_sales_analysis_payload, analysis_records_status, readable_sale_date, format_cama_details, ai_request_guard, MAX_AI_CALLS_PER_SESSION
 from agent import explain_with_agent, format_explanation_for_display, format_usage_summary
 
 load_dotenv(Path.cwd() / ".env")
 load_dotenv(Path.cwd().parent / ".env")
 st.set_page_config(page_title="New Haven Public Property Sales Explorer", layout="wide")
+st.session_state.setdefault("ai_calls_made", 0)
+st.session_state.setdefault("ai_reported_spend_usd", 0.0)
+
+
+@st.cache_data(ttl=3600, show_spinner="Loading and caching official Connecticut records…")
+def load_live_comps_cached():
+    return fetch_new_haven_comps()
+
+
+@st.cache_data(ttl=3600, show_spinner="Checking the official sales source…")
+def audit_sales_cached(rows, sample_size=5):
+    return audit_sales_records(rows, sample_size=sample_size)
 st.markdown("""
 <style>
 :root {
@@ -42,21 +54,48 @@ st.caption("Public-record explorer only • no investment recommendations • as
 with st.expander("How to use", expanded=True):
     st.markdown("**1.** Type a search request such as *apartments under USD 1,000,000*.\n\n**2.** Review the Python-applied filters and matching source records.\n\n**3.** Use the map, median, table, and CSV export. AI answers only from the matching public records and never invents records.")
 
+using_sample_data = False
+sample_metadata = {}
+live_load_error = None
 try:
-    comps = fetch_new_haven_comps()
+    comps = load_live_comps_cached()
     coverage = comp_coverage(comps)
 except Exception as exc:
-    st.error(f"Official Connecticut data could not be loaded: {type(exc).__name__}.")
-    st.stop()
-st.success(f"Loaded records: {len(comps)} across: {', '.join(coverage['property_types'])}.")
+    live_load_error = type(exc).__name__
+    try:
+        comps, sample_metadata = load_sample_comps()
+        coverage = comp_coverage(comps)
+        using_sample_data = True
+    except Exception as sample_exc:
+        st.error(f"Live Connecticut data and bundled sample could not be loaded ({live_load_error}; {type(sample_exc).__name__}).")
+        st.stop()
+if using_sample_data:
+    st.warning(
+        f"Offline demonstration snapshot: {len(comps)} real public records captured on "
+        f"{sample_metadata.get('snapshot_date', 'an unknown date')}. This is a small, historical sample, not the complete or current dataset. "
+        f"Live source load failed ({live_load_error})."
+    )
+else:
+    st.success(f"Loaded records: {len(comps)} across: {', '.join(coverage['property_types'])}.")
 st.caption(f"Sales vintage: {SALES_VINTAGE} | Parcel/CAMA vintage: {CAMA_VINTAGE}")
-audit = audit_sales_records(comps, sample_size=5)
+audit = None
+audit_error = None
+if not using_sample_data:
+    try:
+        audit = audit_sales_cached(comps, sample_size=5)
+    except Exception as exc:
+        audit_error = type(exc).__name__
 with st.expander("Official-source audit"):
-    st.write(f"Sales source: {audit['sales_source_url']} | CAMA source: {audit['cama_source_url']}")
-    st.write(f"Sales source rows: {audit['source_row_count']} | CAMA source rows: {audit['cama_row_count']} | Loaded sales rows: {audit['displayed_row_count']} | Date range: {audit['date_range'][0]} to {audit['date_range'][1]}")
-    st.write("Record IDs: " + ", ".join(str(x) for x in audit["record_ids"]))
-    if audit["all_direct_checks_pass"]: st.success("Five displayed sales were directly verified against the official source.")
-    else: st.error("A direct source verification failed.")
+    if using_sample_data:
+        st.info("The bundled rows come from the official sales and CAMA sources, but this offline snapshot is not re-audited live.")
+    elif audit is None:
+        st.warning(f"Live source audit could not complete ({audit_error}). The app data loaded, but this session is not marked audited.")
+    else:
+        st.write(f"Sales source: {audit['sales_source_url']} | CAMA source: {audit['cama_source_url']}")
+        st.write(f"Sales source rows: {audit['source_row_count']} | CAMA source rows: {audit['cama_row_count']} | Loaded sales rows: {audit['displayed_row_count']} | Date range: {audit['date_range'][0]} to {audit['date_range'][1]}")
+        st.write("Record IDs: " + ", ".join(str(x) for x in audit["record_ids"]))
+        if audit["all_direct_checks_pass"]: st.success("Five displayed sales were directly verified against the official source.")
+        else: st.error("A direct source verification failed.")
 
 types = sorted({r["property_type"] for r in comps if r.get("property_type")})
 dates = [datetime.fromisoformat(r["sale_date"][:10]).date() for r in comps if r.get("sale_date")]
@@ -129,6 +168,11 @@ else: st.info("No matching records have reliable official coordinates for mappin
 
 st.subheader("Ask a factual question about matching records")
 analysis_question = st.text_area("Question", placeholder="What were the highest sale prices, and which records support them?", height=80)
+st.caption(
+    f"AI requests this browser session: {st.session_state.ai_calls_made}/{MAX_AI_CALLS_PER_SESSION} · "
+    f"reported spend: USD {st.session_state.ai_reported_spend_usd:.6f}. "
+    "A session limit and per-run token limits reduce accidental repeat spend; this is not a per-account billing cap."
+)
 if st.button("Ask AI about matching records"):
     prompt = "Answer only from the Python analysis and read-only public sales records supplied by the application. Explain the exact result concisely, cite record IDs and source links, and say when the data cannot answer. Do not invent facts or make recommendations."
     try:
@@ -137,6 +181,11 @@ if st.button("Ask AI about matching records"):
             st.stop()
         if not analysis_question.strip():
             st.error("Enter a factual question about the matching records before asking AI.")
+            st.stop()
+        request_guard = ai_request_guard(st.session_state.ai_calls_made, analysis_question)
+        if not request_guard["allowed"]:
+            st.caption("Records sent to AI: 0")
+            st.error(request_guard["message"])
             st.stop()
         analysis_payload = build_sales_analysis_payload(filtered, analysis_question)
         python_analysis = analysis_payload.get("python_analysis")
@@ -159,8 +208,12 @@ if st.button("Ask AI about matching records"):
         else:
             st.caption(f"{analysis_records_status(compact_count)} compact analysis records (from {len(filtered)} matching records)")
         ai_request = {"filters": parsed, **analysis_payload}
+        # Count attempts before the network call so provider errors cannot be
+        # retried indefinitely within the same Streamlit browser session.
+        st.session_state.ai_calls_made += 1
         memo, usage = asyncio.run(explain_with_agent(prompt + " Cite the supplied record IDs and source links.\nUser question: " + analysis_question, ai_request))
         if usage.get("available"):
+            st.session_state.ai_reported_spend_usd += float(usage.get("cost_usd", 0.0))
             if python_analysis["analysis"] == "annual_trend":
                 st.success("Individual records sent to AI: 0; Python-computed annual summary sent.")
             else:

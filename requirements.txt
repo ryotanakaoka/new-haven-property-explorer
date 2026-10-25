@@ -1,6 +1,6 @@
 streamlit>=1.40,<2
 pydantic>=2,<3
-pydantic-ai>=0.0.14
+pydantic-ai>=1.0.0,<3
 portkey-ai>=1.7
 python-dotenv>=1.0
 pytest>=8
