@@ -94,7 +94,7 @@ def analyze_filtered_records(rows: list[dict], question: str) -> dict:
     """Calculate supported factual analyses using only the already filtered rows."""
     text = (question or "").lower()
     prices = [r for r in rows if r.get("sale_price") is not None]
-    cited = lambda records: [{"record_id": r.get("record_id"), "sales_source": r.get("sales_source")} for r in records[:5]]
+    cited = lambda records: [{"record_id": r.get("record_id"), "sale_date": r.get("sale_date"), "sale_price": r.get("sale_price"), "sales_source": r.get("sales_source")} for r in records[:5]]
     if any(word in text for word in ("recent", "latest", "newest")):
         ordered = sorted(prices, key=lambda r: r.get("sale_date", ""), reverse=True)
         return {"supported": True, "analysis": "recent_sales", "count": len(ordered), "records": cited(ordered[:5])}

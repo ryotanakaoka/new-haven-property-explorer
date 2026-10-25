@@ -27,6 +27,10 @@ PUBLIC_RECORD_RESPONSE_INSTRUCTIONS = (
 def blocks_invention_request(prompt: str) -> bool:
     return bool(INVENTION_RE.search(prompt))
 
+def user_question_from_prompt(prompt: str) -> str:
+    """Extract the user question so safety validation ignores trusted instructions."""
+    return prompt.split("User question:", 1)[-1].strip()
+
 
 def format_explanation_for_display(text: str) -> str:
     """Avoid Markdown math parsing while preserving the agent's wording."""
@@ -94,7 +98,7 @@ def _redact_error(exc: Exception, secret: str | None = None) -> str:
 
 
 async def explain_with_agent(prompt: str, calculator_result: dict) -> tuple[str, dict]:
-    if blocks_invention_request(prompt):
+    if blocks_invention_request(user_question_from_prompt(prompt)):
         return "I can't invent or alter public-sales facts. Please ask a supported question about the supplied public-sales analysis.", {"available": False, "message": "Request blocked by validation."}
     try:
         from openai import AsyncOpenAI

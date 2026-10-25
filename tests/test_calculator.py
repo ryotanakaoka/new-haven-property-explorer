@@ -1,6 +1,6 @@
 import pytest
 from calculator import StressInputs, calculate_cash_flows, break_even_refinancing_rate
-from agent import blocks_invention_request, usage_cost, format_explanation_for_display, extract_stated_assumptions, calculate_confirmed_scenario, parse_screen_decision
+from agent import blocks_invention_request, usage_cost, format_explanation_for_display, extract_stated_assumptions, calculate_confirmed_scenario, parse_screen_decision, user_question_from_prompt
 from screener import screen_deal, compare_to_comps, final_screen_verdict
 from data import comp_coverage, fetch_sales_pages, fetch_new_haven_comps, SALES_URL, CAMA_URL
 from explorer import filter_sales, parse_natural_language_filters, search_request_result, build_ai_records_payload, combine_search_filters, analyze_filtered_records, build_sales_analysis_payload
@@ -217,7 +217,17 @@ def test_end_to_end_five_most_recent_sales_payload_is_compact():
     assert result["analysis"] == "recent_sales"
     assert len(result["records"]) == 5
     assert [r["record_id"] for r in result["records"]] == ["r7", "r6", "r5", "r4", "r3"]
-    assert all("sales_source" in r for r in result["records"])
+    assert all({"sale_date", "sale_price", "sales_source"}.issubset(r) for r in result["records"])
+
+def test_exact_recent_sales_question_validates_against_compact_payload():
+    rows = [{"record_id": f"r{i}", "property_type": "Apartments", "sale_date": f"202{i}-01-01",
+             "sale_price": 500000 + i, "sales_source": f"https://example.test/{i}"} for i in range(8)]
+    question = "What are the five most recent sales? Include dates, prices, and record IDs."
+    payload = build_sales_analysis_payload(rows, question)
+    assert payload["python_analysis"]["supported"] is True
+    assert len(payload["python_analysis"]["records"]) == 5
+    assert user_question_from_prompt("Do not invent facts. User question: " + question) == question
+    assert blocks_invention_request(user_question_from_prompt("Do not invent facts. User question: " + question)) is False
 
 def test_unsupported_analysis_question_is_explicit():
     result = analyze_filtered_records([], "what is the neighborhood outlook?")
