@@ -2,8 +2,9 @@ import pytest
 from calculator import StressInputs, calculate_cash_flows, break_even_refinancing_rate
 from agent import blocks_invention_request, usage_cost, format_explanation_for_display, extract_stated_assumptions, calculate_confirmed_scenario, parse_screen_decision
 from screener import screen_deal, compare_to_comps, final_screen_verdict
-from data import comp_coverage
-from explorer import filter_sales, parse_natural_language_filters
+from data import comp_coverage, fetch_sales_pages, fetch_new_haven_comps, SALES_URL, CAMA_URL
+from explorer import filter_sales, parse_natural_language_filters, search_request_result, build_ai_records_payload, combine_search_filters
+from agent import PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
 from offering_packet import extract_offering_pdf, extract_offering_text_pages
 from pypdf import PdfWriter
 from io import BytesIO
@@ -128,3 +129,98 @@ def test_public_sales_filters_and_natural_language_are_conservative():
     rows = [{"property_type":"Apartments", "sale_date":"2025-01-01T00:00:00", "sale_price":500000}, {"property_type":"Two Family", "sale_date":"2024-01-01T00:00:00", "sale_price":800000}]
     parsed = parse_natural_language_filters("apartments under $600,000", ["Apartments", "Two Family"])
     assert len(filter_sales(rows, **parsed)) == 1
+
+def test_natural_language_filters_convert_property_price_and_date_range():
+    parsed = parse_natural_language_filters("three family sales from 2022 to 2024 between $500,000 and $900,000", ["Apartments", "Three Family"])
+    assert parsed["property_types"] == ["Three Family"]
+    assert parsed["min_price"] == 500000
+    assert parsed["max_price"] == 900000
+    assert parsed["start_date"].isoformat() == "2022-01-01"
+    assert parsed["end_date"].isoformat() == "2024-12-31"
+
+def test_screenshot_year_range_is_dates_not_prices():
+    parsed = parse_natural_language_filters("Show apartment sales from 2022 through 2024 between $600,000 and $900,000", ["Apartments", "Three Family"])
+    assert parsed["property_types"] == ["Apartments"]
+    assert parsed["start_date"].isoformat() == "2022-01-01"
+    assert parsed["end_date"].isoformat() == "2024-12-31"
+    assert parsed["min_price"] == 600000
+    assert parsed["max_price"] == 900000
+
+def test_apartments_filter_and_unsupported_location_request():
+    rows = [{"property_type": "Apartments", "sale_date": "2024-01-01", "sale_price": 700000}, {"property_type": "Two Family", "sale_date": "2024-01-01", "sale_price": 700000}]
+    parsed = parse_natural_language_filters("apartments", ["Apartments", "Two Family"])
+    assert len(filter_sales(rows, **{k: parsed[k] for k in ("property_types", "start_date", "end_date", "min_price", "max_price")})) == 1
+    assert parse_natural_language_filters("downtown apartments", ["Apartments"])["unsupported_location"] is True
+
+def test_exact_unsupported_location_phrase_is_flagged():
+    parsed = parse_natural_language_filters("show me only downtown area", ["Apartments", "Two Family"])
+    assert parsed.get("unsupported_location", False) is True
+
+def test_unsupported_search_stops_before_filtering():
+    result = search_request_result("show me only downtown area", ["Apartments", "Two Family"])
+    assert result["stop"] is True
+    assert result["message"] == "Location search is not supported. Use the property-type, date, and price filters instead."
+
+def test_unrecognized_nonempty_search_stops_before_full_dataset_can_reach_ai():
+    result = search_request_result("tell me something interesting", ["Apartments", "Two Family"])
+    assert result["stop"] is True
+    assert "No supported filter" in result["message"]
+
+def test_ai_payload_for_111_records_has_exact_count_median_and_ids():
+    rows = [{"record_id": str(i), "address": f"{i} MAIN ST", "property_type": "Apartments", "sale_date": "2024-01-01", "sale_price": 530000 + i * 1000, "assessment": 300000} for i in range(111)]
+    payload = build_ai_records_payload(rows)
+    assert payload["matching_count"] == 111
+    assert payload["median_sale_price"] == 585000
+    assert payload["record_ids"] == [str(i) for i in range(111)]
+    assert len(payload["records"]) == 111
+
+def test_apartments_under_million_payload_is_exact_filtered_result():
+    rows = [{"record_id": str(i), "address": f"{i} MAIN ST", "property_type": "Apartments",
+             "sale_date": "2024-01-01", "sale_price": 530000 + i * 1000, "assessment": 300000}
+            for i in range(111)]
+    rows += [{"record_id": "over", "address": "OVER MAIN ST", "property_type": "Apartments",
+              "sale_date": "2024-01-01", "sale_price": 1_000_001, "assessment": 300000}]
+    parsed = parse_natural_language_filters("apartments under USD 1,000,000", ["Apartments", "Two Family"])
+    filters = combine_search_filters({"property_types": ["Apartments", "Two Family"], "start_date": None,
+                                      "end_date": None, "min_price": None, "max_price": None}, parsed)
+    filtered = filter_sales(rows, **filters)
+    payload = build_ai_records_payload(filtered)
+    assert len(filtered) == payload["matching_count"] == 111
+    assert payload["median_sale_price"] == 585000
+    assert "over" not in payload["record_ids"]
+
+def test_public_record_agent_response_is_concise_and_limits_example_ids():
+    assert "exact matching_count" in PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
+    assert "median_sale_price" in PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
+    assert "at most three" in PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
+    assert "never list all records" in PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
+
+def test_sales_fetch_paginates_until_short_page():
+    pages = [[{"serialnumber": str(i)} for i in range(100)], [{"serialnumber": "record-101"}]]
+    calls = []
+    class Response:
+        def __init__(self, page): self.page = page
+        def raise_for_status(self): pass
+        def json(self): return self.page
+    def fake_get(url, params, timeout):
+        calls.append(params["$offset"])
+        return Response(pages[len(calls) - 1])
+    rows = fetch_sales_pages("town='NEW HAVEN'", page_size=100, request_get=fake_get)
+    assert len(rows) == 101
+    assert rows[100]["serialnumber"] == "record-101"
+    assert calls == [0, 100]
+
+def test_production_loader_includes_records_beyond_first_100(monkeypatch):
+    class Response:
+        def __init__(self, payload): self.payload = payload
+        def raise_for_status(self): pass
+        def json(self): return self.payload
+    first = [{"serialnumber": str(i), "propertytype": "Apartments", "daterecorded": "2024-01-01T00:00:00", "saleamount": "500000", "address": f"{i} MAIN ST", "town": "New Haven", "listyear": "2024"} for i in range(100)]
+    second = [{"serialnumber": "record-101", "propertytype": "Apartments", "daterecorded": "2024-01-01T00:00:00", "saleamount": "500000", "address": "101 MAIN ST", "town": "New Haven", "listyear": "2024"}]
+    def fake_get(url, params, timeout):
+        if url == CAMA_URL: return Response([])
+        return Response(first if params.get("$offset") == 0 else second)
+    monkeypatch.setattr("data.requests.get", fake_get)
+    rows = fetch_new_haven_comps(page_size=100)
+    assert len(rows) == 101
+    assert rows[-1]["record_id"] == "record-101"

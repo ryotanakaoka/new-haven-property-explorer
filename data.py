@@ -19,15 +19,28 @@ def _number(value):
 def normalize_address(value: str | None) -> str:
     return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
 
-def fetch_new_haven_comps(limit: int = 100) -> list[dict]:
+def fetch_sales_pages(where: str, page_size: int = 1000, request_get=None) -> list[dict]:
+    """Fetch every matching Socrata row using offset pagination."""
+    request_get = request_get or requests.get
+    rows, offset = [], 0
+    while True:
+        response = request_get(SALES_URL, params={"$where": where, "$order": "listyear DESC, daterecorded DESC", "$limit": page_size, "$offset": offset}, timeout=20)
+        response.raise_for_status()
+        page = response.json()
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+        offset += page_size
+
+
+def fetch_new_haven_comps(page_size: int = 1000) -> list[dict]:
     where = "upper(town)='NEW HAVEN' AND propertytype in ('Two Family','Three Family','Four Family','Apartments')"
-    sales = requests.get(SALES_URL, params={"$where": where, "$order": "listyear DESC, daterecorded DESC", "$limit": limit}, timeout=20)
-    sales.raise_for_status()
+    sales_rows = fetch_sales_pages(where, page_size)
     cama = requests.get(CAMA_URL, params={"$where": "upper(property_city)='NEW HAVEN'", "$limit": 50000}, timeout=30)
     cama.raise_for_status()
     assessments = {normalize_address(row.get("location")): row for row in cama.json() if row.get("location")}
     rows = []
-    for row in sales.json():
+    for row in sales_rows:
         address = row.get("address", "")
         parcel = assessments.get(normalize_address(address), {})
         record_id = row.get("serialnumber", "")
