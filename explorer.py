@@ -6,6 +6,33 @@ from statistics import median
 from collections import defaultdict
 
 AI_RECORD_CAP = 5000
+MAX_AI_CALLS_PER_SESSION = 5
+MAX_AI_QUESTION_CHARS = 500
+PROMPT_INJECTION_RE = re.compile(
+    r"\b(?:ignore|disregard|override)\b.{0,80}\b(?:all\s+)?(?:previous|prior|above|system|developer)\s+instructions?\b"
+    r"|\b(?:reveal|print|show)\b.{0,80}\b(?:system prompt|developer message|hidden instructions|secrets?)\b",
+    re.I,
+)
+
+
+def is_prompt_injection_request(text: str) -> bool:
+    """Recognize common instruction-override or secret-extraction attempts."""
+    return bool(PROMPT_INJECTION_RE.search(text or ""))
+
+
+def ai_request_guard(calls_made: int, question: str) -> dict:
+    """Bound AI use in one Streamlit session and reject oversized questions."""
+    if len(question or "") > MAX_AI_QUESTION_CHARS:
+        return {
+            "allowed": False,
+            "message": f"Questions are limited to {MAX_AI_QUESTION_CHARS} characters.",
+        }
+    if calls_made >= MAX_AI_CALLS_PER_SESSION:
+        return {
+            "allowed": False,
+            "message": f"This browser session has reached its limit of {MAX_AI_CALLS_PER_SESSION} AI requests. Start a new session or continue with the Python results.",
+        }
+    return {"allowed": True, "message": None}
 
 def readable_sale_date(value) -> str | None:
     """Return the public-facing ISO calendar date without a timestamp."""
@@ -135,6 +162,16 @@ def analyze_filtered_records(rows: list[dict], question: str) -> dict:
 
 def build_sales_analysis_payload(filtered: list[dict], question: str) -> dict:
     """Return only the compact Python result needed to explain a sales question."""
+    if is_prompt_injection_request(question):
+        return {
+            "supported": False,
+            "message": "This request includes instructions outside the supported public-record analysis and was blocked before AI.",
+        }
+    if len(question or "") > MAX_AI_QUESTION_CHARS:
+        return {
+            "supported": False,
+            "message": f"Questions are limited to {MAX_AI_QUESTION_CHARS} characters.",
+        }
     analysis = analyze_filtered_records(filtered, question)
     if not analysis["supported"]:
         return analysis
