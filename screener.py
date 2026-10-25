@@ -1,5 +1,6 @@
 """Python-only deal screening calculations."""
 from __future__ import annotations
+from statistics import median
 
 def screen_deal(asking_price: float, annual_rent: float, annual_expenses: float, address: str = "", unit_count: int = 0) -> dict:
     if asking_price <= 0 or annual_rent < 0 or annual_expenses < 0:
@@ -9,8 +10,8 @@ def screen_deal(asking_price: float, annual_rent: float, annual_expenses: float,
 
 def compare_to_comps(deal: dict, comps: list[dict]) -> dict:
     prices = [row["sale_price"] for row in comps if row.get("sale_price") is not None and row["sale_price"] > 0]
-    median = sorted(prices)[len(prices) // 2] if prices else None
-    return {"sale_count": len(prices), "median_sale_price": median, "asking_vs_median": deal["asking_price"] / median if median else None}
+    median_sale_price = median(prices) if prices else None
+    return {"sale_count": len(prices), "median_sale_price": median_sale_price, "asking_vs_median": deal["asking_price"] / median_sale_price if median_sale_price else None}
 
 
 def final_screen_verdict(deal: dict, hurdle_rate: float, coverage: dict) -> dict:

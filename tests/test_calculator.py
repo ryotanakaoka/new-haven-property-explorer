@@ -1,7 +1,7 @@
 import pytest
 from calculator import StressInputs, calculate_cash_flows, break_even_refinancing_rate
 from agent import blocks_invention_request, usage_cost, format_explanation_for_display, extract_stated_assumptions, calculate_confirmed_scenario, parse_screen_decision
-from screener import screen_deal, final_screen_verdict
+from screener import screen_deal, compare_to_comps, final_screen_verdict
 from data import comp_coverage
 from explorer import filter_sales, parse_natural_language_filters
 from offering_packet import extract_offering_pdf, extract_offering_text_pages
@@ -76,6 +76,12 @@ def test_new_haven_screener_calculates_python_noi_and_cap_rate():
     deal = screen_deal(1_000_000, 120_000, 40_000)
     assert deal["noi"] == 80000
     assert deal["cap_rate"] == .08
+
+def test_compare_to_comps_uses_standard_even_count_median():
+    deal = screen_deal(1_000_000, 120_000, 40_000)
+    comps = [{"sale_price": price} for price in (100_000, 200_000, 300_000, 400_000)]
+    result = compare_to_comps(deal, comps)
+    assert result["median_sale_price"] == 250_000
 
 def test_comp_coverage_reports_types_without_mixing_them():
     coverage = comp_coverage([{"property_type": "Two Family"}, {"property_type": "Single Family"}], minimum=2)
