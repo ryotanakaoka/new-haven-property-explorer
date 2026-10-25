@@ -3,7 +3,7 @@ from calculator import StressInputs, calculate_cash_flows, break_even_refinancin
 from agent import blocks_invention_request, usage_cost, format_explanation_for_display, extract_stated_assumptions, calculate_confirmed_scenario, parse_screen_decision
 from screener import screen_deal, compare_to_comps, final_screen_verdict
 from data import comp_coverage, fetch_sales_pages, fetch_new_haven_comps, SALES_URL, CAMA_URL
-from explorer import filter_sales, parse_natural_language_filters, search_request_result, build_ai_records_payload, combine_search_filters
+from explorer import filter_sales, parse_natural_language_filters, search_request_result, build_ai_records_payload, combine_search_filters, analyze_filtered_records
 from agent import PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
 from offering_packet import extract_offering_pdf, extract_offering_text_pages
 from pypdf import PdfWriter
@@ -194,6 +194,23 @@ def test_public_record_agent_response_is_concise_and_limits_example_ids():
     assert "median_sale_price" in PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
     assert "at most three" in PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
     assert "never list all records" in PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
+
+def test_filtered_record_analyses_are_python_calculated():
+    rows = [
+        {"record_id": "a", "property_type": "Apartments", "sale_date": "2022-01-01", "sale_price": 500000, "sales_source": "https://example/a"},
+        {"record_id": "b", "property_type": "Two Family", "sale_date": "2023-01-01", "sale_price": 700000, "sales_source": "https://example/b"},
+        {"record_id": "c", "property_type": "Apartments", "sale_date": "2024-01-01", "sale_price": 600000, "sales_source": "https://example/c"},
+    ]
+    assert analyze_filtered_records(rows, "show recent sales")["records"][0]["record_id"] == "c"
+    assert analyze_filtered_records(rows, "what are the highest prices?")["prices"] == [700000, 600000, 500000]
+    assert analyze_filtered_records(rows, "show the trend over time")["by_year"]["2023"]["median_sale_price"] == 700000
+    comparison = analyze_filtered_records(rows, "compare by property type")
+    assert comparison["by_property_type"]["Apartments"]["median_sale_price"] == 550000
+
+def test_unsupported_analysis_question_is_explicit():
+    result = analyze_filtered_records([], "what is the neighborhood outlook?")
+    assert result["supported"] is False
+    assert "cannot answer" in result["message"]
 
 def test_sales_fetch_paginates_until_short_page():
     pages = [[{"serialnumber": str(i)} for i in range(100)], [{"serialnumber": "record-101"}]]

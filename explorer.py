@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 import re
 from statistics import median
+from collections import defaultdict
 
 AI_RECORD_CAP = 5000
 
@@ -86,5 +87,31 @@ def build_ai_records_payload(filtered: list[dict], cap: int = AI_RECORD_CAP) -> 
     if len(filtered) > cap:
         raise ValueError(f"AI record cap exceeded: {len(filtered)} > {cap}")
     prices = [row["sale_price"] for row in filtered if row.get("sale_price") is not None]
-    records = [{key: row.get(key) for key in ("record_id", "address", "property_type", "sale_date", "sale_price", "assessment")} for row in filtered]
+    records = [{key: row.get(key) for key in ("record_id", "address", "property_type", "sale_date", "sale_price", "assessment", "sales_source")} for row in filtered]
     return {"matching_count": len(filtered), "median_sale_price": median(prices) if prices else None, "record_ids": [row.get("record_id") for row in filtered], "records": records}
+
+def analyze_filtered_records(rows: list[dict], question: str) -> dict:
+    """Calculate supported factual analyses using only the already filtered rows."""
+    text = (question or "").lower()
+    prices = [r for r in rows if r.get("sale_price") is not None]
+    cited = lambda records: [{"record_id": r.get("record_id"), "sales_source": r.get("sales_source")} for r in records[:5]]
+    if any(word in text for word in ("recent", "latest", "newest")):
+        ordered = sorted(prices, key=lambda r: r.get("sale_date", ""), reverse=True)
+        return {"supported": True, "analysis": "recent_sales", "count": len(ordered), "records": cited(ordered[:5])}
+    if any(word in text for word in ("highest", "most expensive", "maximum")):
+        ordered = sorted(prices, key=lambda r: r["sale_price"], reverse=True)
+        return {"supported": True, "analysis": "highest_prices", "records": cited(ordered[:5]), "prices": [r["sale_price"] for r in ordered[:5]]}
+    if any(word in text for word in ("lowest", "cheapest", "minimum")):
+        ordered = sorted(prices, key=lambda r: r["sale_price"])
+        return {"supported": True, "analysis": "lowest_prices", "records": cited(ordered[:5]), "prices": [r["sale_price"] for r in ordered[:5]]}
+    if "trend" in text or "over time" in text:
+        grouped = defaultdict(list)
+        for row in prices:
+            grouped[row["sale_date"][:4]].append(row["sale_price"])
+        return {"supported": True, "analysis": "annual_trend", "by_year": {year: {"count": len(vals), "median_sale_price": median(vals)} for year, vals in sorted(grouped.items())}}
+    if any(word in text for word in ("compare", "comparison", "by property type", "property types")):
+        grouped = defaultdict(list)
+        for row in prices:
+            grouped[row.get("property_type") or "Unknown"].append(row["sale_price"])
+        return {"supported": True, "analysis": "property_type_comparison", "by_property_type": {typ: {"count": len(vals), "median_sale_price": median(vals)} for typ, vals in sorted(grouped.items())}}
+    return {"supported": False, "message": "The filtered public sales cannot answer that question. Ask about recent sales, highest or lowest prices, trends over time, or comparisons by property type."}

@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from data import fetch_new_haven_comps, comp_coverage, audit_sales_records, SALES_VINTAGE, CAMA_VINTAGE
-from explorer import filter_sales, search_request_result, combine_search_filters, build_ai_records_payload
+from explorer import filter_sales, search_request_result, combine_search_filters, build_ai_records_payload, analyze_filtered_records
 from agent import explain_with_agent, format_explanation_for_display
 
 load_dotenv(Path.cwd() / ".env")
@@ -42,8 +42,8 @@ with st.sidebar:
     min_price = st.number_input("Minimum sale price (USD)", min_value=0, value=0, step=25_000)
     max_price = st.number_input("Maximum sale price (USD; 0 = no maximum)", min_value=0, value=0, step=25_000)
 
-st.subheader("Ask about public sales")
-chat = st.text_area("Search question", placeholder="Show apartments under USD 1,000,000", height=80)
+st.subheader("Filter public sales")
+chat = st.text_area("Natural-language filter (optional)", placeholder="Show apartments under USD 1,000,000", height=80)
 sidebar_filters = {"property_types": selected_types, "start_date": date_range[0] if isinstance(date_range, tuple) else date_range, "end_date": date_range[-1] if isinstance(date_range, tuple) else date_range, "min_price": min_price or None, "max_price": max_price or None}
 if st.button("Apply search"):
     search_result = search_request_result(chat, types)
@@ -81,15 +81,24 @@ if map_rows:
     st.pydeck_chart(pdk.Deck(initial_view_state=pdk.ViewState(latitude=41.31, longitude=-72.92, zoom=11), layers=[pdk.Layer("ScatterplotLayer", data=map_data, get_position="[longitude, latitude]", get_radius=90, get_fill_color=[255, 215, 0, 230], stroked=True, get_line_color=[20, 20, 20, 255], line_width_min_pixels=3, pickable=True)], tooltip={"text": "{tooltip}"}))
 else: st.info("No matching records have reliable official coordinates for mapping.")
 
+st.subheader("Ask a factual question about matching records")
+analysis_question = st.text_area("Question", placeholder="What were the highest sale prices, and which records support them?", height=80)
 if st.button("Ask AI about matching records"):
-    prompt = "Answer only from the read-only public sales records supplied by the application. Report concise facts only: state the exact matching count and median, then cite at most three example record IDs (never list all records). Use no unstated prices and make no investment recommendation."
+    prompt = "Answer only from the Python analysis and read-only public sales records supplied by the application. Explain the exact result concisely, cite record IDs and source links, and say when the data cannot answer. Do not invent facts or make recommendations."
     try:
         if len(filtered) == len(comps):
             st.error("Apply an effective property type, date, price, or natural-language filter before asking AI; sending all records is disabled.")
             st.stop()
         ai_records = build_ai_records_payload(filtered)
+        if not analysis_question.strip():
+            st.error("Enter a factual question about the matching records before asking AI.")
+            st.stop()
+        analysis = analyze_filtered_records(filtered, analysis_question)
+        if not analysis["supported"]:
+            st.error(analysis["message"])
+            st.stop()
         st.caption(f"Records sent to AI: {ai_records['matching_count']}")
-        memo, usage = asyncio.run(explain_with_agent(prompt + " Cite record IDs and keep the count and median consistent with the supplied Python summary.\nUser question: " + chat, {"filters": parsed, **ai_records}))
+        memo, usage = asyncio.run(explain_with_agent(prompt + "\nUser question: " + analysis_question, {"filters": parsed, "python_analysis": analysis, **ai_records}))
         if usage.get("available"): st.write(format_explanation_for_display(memo))
         else: st.error(memo)
         st.json(usage)
