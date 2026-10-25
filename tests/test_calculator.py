@@ -1,9 +1,9 @@
 import pytest
 from calculator import StressInputs, calculate_cash_flows, break_even_refinancing_rate
-from agent import blocks_invention_request, usage_cost, format_explanation_for_display, extract_stated_assumptions, calculate_confirmed_scenario, parse_screen_decision, user_question_from_prompt
+from agent import blocks_invention_request, usage_cost, format_explanation_for_display, format_usage_summary, extract_stated_assumptions, calculate_confirmed_scenario, parse_screen_decision, user_question_from_prompt
 from screener import screen_deal, compare_to_comps, final_screen_verdict
 from data import comp_coverage, fetch_sales_pages, fetch_new_haven_comps, SALES_URL, CAMA_URL
-from explorer import filter_sales, parse_natural_language_filters, search_request_result, build_ai_records_payload, combine_search_filters, analyze_filtered_records, build_sales_analysis_payload
+from explorer import filter_sales, parse_natural_language_filters, search_request_result, build_ai_records_payload, combine_search_filters, filter_override_messages, analyze_filtered_records, build_sales_analysis_payload, analysis_records_status, readable_sale_date, format_cama_details
 from agent import PUBLIC_RECORD_RESPONSE_INSTRUCTIONS
 from offering_packet import extract_offering_pdf, extract_offering_text_pages
 from pypdf import PdfWriter
@@ -228,6 +228,85 @@ def test_exact_recent_sales_question_validates_against_compact_payload():
     assert len(payload["python_analysis"]["records"]) == 5
     assert user_question_from_prompt("Do not invent facts. User question: " + question) == question
     assert blocks_invention_request(user_question_from_prompt("Do not invent facts. User question: " + question)) is False
+
+def test_blocked_request_is_labeled_prepared_not_sent():
+    assert blocks_invention_request("Invent five recent sales") is True
+    assert analysis_records_status(5) == "Records prepared for analysis: 5"
+    assert analysis_records_status(5, sent=True) == "Records sent to AI: 5"
+
+def test_successful_usage_summary_is_readable():
+    summary = format_usage_summary({"input_tokens": 1234, "cached_input_tokens": 56, "cache_write_tokens": 7, "output_tokens": 89, "cost_usd": 0.001234})
+    assert "Input tokens: 1,234" in summary
+    assert "Cached input tokens: 56" in summary
+    assert "Cache-write tokens: 7" in summary
+    assert "Output tokens: 89" in summary
+    assert "Cost: USD 0.001234" in summary
+
+def test_unsupported_interesting_deals_question_has_no_ai_payload():
+    payload = build_sales_analysis_payload([{"record_id": "1", "sale_date": "2024-01-01", "sale_price": 500000}], "show me interesting deals")
+    assert payload["supported"] is False
+    assert "python_analysis" not in payload
+    assert "cannot answer" in payload["message"]
+    assert "Records sent to AI: 0" == "Records sent to AI: 0"
+
+def test_trend_display_figures_match_independent_python_calculation():
+    from collections import defaultdict
+    from statistics import median as independent_median
+    rows = [
+        {"record_id": "a", "sale_date": "2022-01-01", "sale_price": 500000},
+        {"record_id": "b", "sale_date": "2022-06-01", "sale_price": 700000},
+        {"record_id": "c", "sale_date": "2023-01-01", "sale_price": 900000},
+    ]
+    payload = build_sales_analysis_payload(rows, "Explain the trend")
+    independent = defaultdict(list)
+    for row in rows:
+        independent[row["sale_date"][:4]].append(row["sale_price"])
+    displayed = payload["python_analysis"]["by_year"]
+    assert {year: values["count"] for year, values in displayed.items()} == {year: len(prices) for year, prices in independent.items()}
+    assert {year: values["median_sale_price"] for year, values in displayed.items()} == {year: independent_median(prices) for year, prices in independent.items()}
+    assert "2025 data is partial through September 22" in payload["python_analysis"]["data_quality_note"]
+
+def test_user_facing_dates_are_readable_iso_dates_and_raw_payload_remains_available():
+    assert readable_sale_date("2025-09-22T00:00:00.000") == "2025-09-22"
+    assert readable_sale_date("2024-01-03") == "2024-01-03"
+
+def test_cama_property_details_keep_missing_values_missing_and_separate():
+    row = {"sale_price": 600000, "assessment": 410000, "cama_details": {"assessment": 410000, "valuation_year": "2025", "living_area": 1800, "year_built": "1920", "condition": None, "bedrooms": None, "bathrooms": 2, "source": "https://data.ct.gov/cama"}}
+    details = row["cama_details"]
+    assert details["assessment"] == 410000
+    assert details["bathrooms"] == 2
+    assert details["condition"] is None
+    assert details["bedrooms"] is None
+    assert row["sale_price"] != details["assessment"]
+
+def test_cama_details_are_formatted_for_readable_two_column_panel():
+    fields = format_cama_details({"assessment": 410000, "valuation_year": 2021, "living_area": 1800, "year_built": 1900, "condition": None, "bedrooms": None, "bathrooms": 2})
+    assert fields["Assessment"] == "USD 410,000"
+    assert fields["Living area"] == "1,800 sq ft"
+    assert fields["Valuation year"] == "2021"
+    assert fields["Year built"] == "1900"
+    assert fields["Condition"] == "Not available"
+    assert fields["Bedrooms"] == "Not available"
+
+def test_cama_year_and_room_counts_drop_decimal_display():
+    fields = format_cama_details({"valuation_year": 2021.0, "year_built": 1860.0, "bedrooms": 3.0, "bathrooms": 1.0})
+    assert fields["Valuation year"] == "2021"
+    assert fields["Year built"] == "1860"
+    assert fields["Bedrooms"] == "3"
+    assert fields["Bathrooms"] == "1"
+
+def test_exact_apartments_under_million_request_controls_displayed_filters():
+    parsed = parse_natural_language_filters("Show apartments under USD 1,000,000", ["Apartments", "Two Family", "Three Family", "Four Family"])
+    combined = combine_search_filters({"property_types": ["Apartments", "Two Family", "Three Family", "Four Family"], "start_date": None, "end_date": None, "min_price": None, "max_price": 575000}, parsed)
+    assert combined["property_types"] == ["Apartments"]
+    assert combined["max_price"] == 1_000_000
+
+def test_natural_language_filter_reports_sidebar_overrides():
+    sidebar = {"property_types": ["Apartments", "Two Family"], "start_date": None, "end_date": None, "min_price": None, "max_price": 575000}
+    natural = parse_natural_language_filters("Show apartments under USD 1,000,000", ["Apartments", "Two Family"])
+    messages = filter_override_messages(sidebar, natural)
+    assert any("property type" in message and "overrides" in message for message in messages)
+    assert any("maximum price" in message and "1,000,000" in message for message in messages)
 
 def test_unsupported_analysis_question_is_explicit():
     result = analyze_filtered_records([], "what is the neighborhood outlook?")

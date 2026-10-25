@@ -48,7 +48,8 @@ def fetch_new_haven_comps(page_size: int = 1000) -> list[dict]:
         coords = row.get("geo_coordinates") or {}
         lon = coords.get("coordinates", [None, None])[0] if isinstance(coords, dict) else None
         lat = coords.get("coordinates", [None, None])[1] if isinstance(coords, dict) else None
-        rows.append({"property_type": row.get("propertytype"), "sale_date": row.get("daterecorded") or row.get("listyear"), "sale_price": _number(row.get("saleamount")), "assessment": _number(parcel.get("assessed_total")), "address": address, "latitude": _number(lat), "longitude": _number(lon), "sales_source": f"{SALES_URL}?$where={source_query}", "assessment_source": parcel.get("cama_site_link", {}).get("url") or CAMA_URL, "sales_vintage": SALES_VINTAGE, "cama_vintage": CAMA_VINTAGE})
+        rows.append({"property_type": row.get("propertytype"), "sale_date": row.get("daterecorded") or row.get("listyear"), "sale_price": _number(row.get("saleamount")), "assessment": _number(parcel.get("assessed_total")), "address": address, "latitude": _number(lat), "longitude": _number(lon), "sales_source": f"{SALES_URL}?$where={source_query}", "assessment_source": parcel.get("cama_site_link", {}).get("url") or CAMA_URL, "sales_vintage": SALES_VINTAGE, "cama_vintage": CAMA_VINTAGE,
+            "cama_details": {"assessment": _number(parcel.get("assessed_total")), "valuation_year": parcel.get("valuation_year"), "living_area": _number(parcel.get("living_area")), "year_built": parcel.get("ayb"), "condition": parcel.get("condition_description") or parcel.get("condition"), "bedrooms": _number(parcel.get("number_of_bedroom")), "bathrooms": _number(parcel.get("number_of_baths")), "source": parcel.get("cama_site_link", {}).get("url") or CAMA_URL}})
         rows[-1]["record_id"] = row.get("serialnumber")
         rows[-1]["valid_2024_gl"] = bool(row.get("listyear") == "2024" and (row.get("daterecorded", "")[:10] <= "2025-09-30"))
     return rows

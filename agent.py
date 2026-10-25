@@ -91,6 +91,14 @@ def usage_cost(usage: Any) -> dict:
     cost = (inp*.10 + cached*.01 + cache_write*.125 + out*.50) / 1_000_000
     return {"available": True, "input_tokens": inp, "cached_input_tokens": cached, "cache_write_tokens": cache_write, "output_tokens": out, "cost_usd": round(cost, 6)}
 
+def format_usage_summary(usage: dict) -> str:
+    """Readable usage line for successful responses; raw details remain separately available."""
+    return (f"Input tokens: {usage.get('input_tokens', 0):,} · "
+            f"Cached input tokens: {usage.get('cached_input_tokens', 0):,} · "
+            f"Cache-write tokens: {usage.get('cache_write_tokens', 0):,} · "
+            f"Output tokens: {usage.get('output_tokens', 0):,} · "
+            f"Cost: USD {usage.get('cost_usd', 0):.6f}")
+
 
 def _redact_error(exc: Exception, secret: str | None = None) -> str:
     message = str(exc).replace(secret, "[REDACTED]") if secret else str(exc)

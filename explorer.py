@@ -7,6 +7,12 @@ from collections import defaultdict
 
 AI_RECORD_CAP = 5000
 
+def readable_sale_date(value) -> str | None:
+    """Return the public-facing ISO calendar date without a timestamp."""
+    if not value:
+        return None
+    return str(value)[:10]
+
 def filter_sales(rows, property_types=None, start_date=None, end_date=None, min_price=None, max_price=None, unsupported_location=False):
     out = []
     for row in rows:
@@ -68,33 +74,44 @@ def search_request_result(text: str, known_types) -> dict:
     return {"stop": False, "message": None, "filters": parsed}
 
 def combine_search_filters(sidebar_filters: dict, natural_filters: dict) -> dict:
-    """Intersect sidebar and natural-language filters without mutating either input."""
+    """Apply stated natural-language filters, retaining sidebar values only when unstated."""
     combined = dict(sidebar_filters)
     natural_types = set(natural_filters.get("property_types") or [])
     sidebar_types = set(sidebar_filters.get("property_types") or [])
-    combined["property_types"] = sorted(natural_types & sidebar_types) if natural_types else list(sidebar_types)
-    for key, mode in (("start_date", max), ("end_date", min)):
-        values = [v for v in (sidebar_filters.get(key), natural_filters.get(key)) if v is not None]
-        combined[key] = mode(values) if values else None
-    mins = [v for v in (sidebar_filters.get("min_price"), natural_filters.get("min_price")) if v is not None]
-    maxes = [v for v in (sidebar_filters.get("max_price"), natural_filters.get("max_price")) if v is not None]
-    combined["min_price"] = max(mins) if mins else None
-    combined["max_price"] = min(maxes) if maxes else None
+    combined["property_types"] = sorted(natural_types) if natural_types else list(sidebar_types)
+    for key in ("start_date", "end_date", "min_price", "max_price"):
+        if natural_filters.get(key) is not None:
+            combined[key] = natural_filters[key]
     return combined
+
+def filter_override_messages(sidebar_filters: dict, natural_filters: dict) -> list[str]:
+    """Describe sidebar values replaced by explicitly stated natural-language filters."""
+    labels = {"property_types": "property type", "start_date": "start date", "end_date": "end date", "min_price": "minimum price", "max_price": "maximum price"}
+    messages = []
+    def display(value):
+        if isinstance(value, (int, float)):
+            return f"USD {value:,.0f}"
+        return ", ".join(value) if isinstance(value, (list, tuple, set)) else str(value)
+    for key, label in labels.items():
+        natural = natural_filters.get(key)
+        sidebar = sidebar_filters.get(key)
+        if natural is not None and natural != sidebar:
+            messages.append(f"Natural-language {label} ({display(natural)}) overrides sidebar value ({display(sidebar)}).")
+    return messages
 
 def build_ai_records_payload(filtered: list[dict], cap: int = AI_RECORD_CAP) -> dict:
     """Build a compact payload from exactly the rows currently shown by Python."""
     if len(filtered) > cap:
         raise ValueError(f"AI record cap exceeded: {len(filtered)} > {cap}")
     prices = [row["sale_price"] for row in filtered if row.get("sale_price") is not None]
-    records = [{key: row.get(key) for key in ("record_id", "address", "property_type", "sale_date", "sale_price", "assessment", "sales_source")} for row in filtered]
+    records = [{**{key: row.get(key) for key in ("record_id", "address", "property_type", "sale_price", "assessment", "sales_source")}, "sale_date": readable_sale_date(row.get("sale_date"))} for row in filtered]
     return {"matching_count": len(filtered), "median_sale_price": median(prices) if prices else None, "record_ids": [row.get("record_id") for row in filtered], "records": records}
 
 def analyze_filtered_records(rows: list[dict], question: str) -> dict:
     """Calculate supported factual analyses using only the already filtered rows."""
     text = (question or "").lower()
     prices = [r for r in rows if r.get("sale_price") is not None]
-    cited = lambda records: [{"record_id": r.get("record_id"), "sale_date": r.get("sale_date"), "sale_price": r.get("sale_price"), "sales_source": r.get("sales_source")} for r in records[:5]]
+    cited = lambda records: [{"record_id": r.get("record_id"), "sale_date": readable_sale_date(r.get("sale_date")), "sale_price": r.get("sale_price"), "sales_source": r.get("sales_source")} for r in records[:5]]
     if any(word in text for word in ("recent", "latest", "newest")):
         ordered = sorted(prices, key=lambda r: r.get("sale_date", ""), reverse=True)
         return {"supported": True, "analysis": "recent_sales", "count": len(ordered), "records": cited(ordered[:5])}
@@ -108,7 +125,7 @@ def analyze_filtered_records(rows: list[dict], question: str) -> dict:
         grouped = defaultdict(list)
         for row in prices:
             grouped[row["sale_date"][:4]].append(row["sale_price"])
-        return {"supported": True, "analysis": "annual_trend", "by_year": {year: {"count": len(vals), "median_sale_price": median(vals)} for year, vals in sorted(grouped.items())}}
+        return {"supported": True, "analysis": "annual_trend", "by_year": {year: {"count": len(vals), "median_sale_price": median(vals)} for year, vals in sorted(grouped.items())}, "data_quality_note": "2025 data is partial through September 22 and should not be directly compared with full years."}
     if any(word in text for word in ("compare", "comparison", "by property type", "property types")):
         grouped = defaultdict(list)
         for row in prices:
@@ -122,3 +139,26 @@ def build_sales_analysis_payload(filtered: list[dict], question: str) -> dict:
     if not analysis["supported"]:
         return analysis
     return {"matching_count": len(filtered), "python_analysis": analysis}
+
+def analysis_records_status(count: int, sent: bool = False) -> str:
+    return f"Records sent to AI: {count}" if sent else f"Records prepared for analysis: {count}"
+
+def format_cama_details(details: dict) -> dict:
+    """Format matched CAMA values for the single-property details panel."""
+    def value(key):
+        item = details.get(key)
+        return "Not available" if item in (None, "") else str(item)
+    def whole_value(key):
+        item = details.get(key)
+        return "Not available" if item in (None, "") else f"{float(item):.0f}"
+    assessment = details.get("assessment")
+    living_area = details.get("living_area")
+    return {
+        "Assessment": "Not available" if assessment in (None, "") else f"USD {float(assessment):,.0f}",
+        "Valuation year": whole_value("valuation_year"),
+        "Living area": "Not available" if living_area in (None, "") else f"{float(living_area):,.0f} sq ft",
+        "Year built": whole_value("year_built"),
+        "Condition": value("condition"),
+        "Bedrooms": whole_value("bedrooms"),
+        "Bathrooms": whole_value("bathrooms"),
+    }
